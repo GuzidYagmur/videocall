@@ -199,7 +199,7 @@ export default function CallDemo() {
       socket.off('offer-received');
       socket.off('answer-received');
       socket.off('ice-candidate-received');
-      cleanup(stateRef.current);
+      console.log('[useEffect] unmount (no cleanup)');
       setPcReady(false);
       setLocalReady(false);
     };
@@ -208,7 +208,7 @@ export default function CallDemo() {
   async function initAndJoin() {
     try {
       console.log('[initAndJoin] start');
-      if (stateRef.current.pc) cleanup(stateRef.current);
+      if (stateRef.current.pc) cleanup(stateRef.current, 're-init');
       setPcReady(false);
       setLocalReady(false);
 
@@ -277,19 +277,59 @@ export default function CallDemo() {
 
       console.log('[startCall] createOffer() begin');
       const offer = await s.pc.createOffer({} as any);
+      console.log('[startCall] createOffer OK, sdp len=', offer?.sdp?.length);
 
-      // ✅ SDP’yi VP8/Opus’a zorla (caller tarafı)
+      // 1) MUNGED SDP (VP8/Opus)
       const munged = forceVp8AndOpus(offer.sdp || '');
-      const finalOffer = { type: 'offer' as const, sdp: munged };
+      const mungedInit = { type: 'offer' as const, sdp: munged };
 
-      console.log('[startCall] setLocalDescription(munged offer)');
-      await s.pc.setLocalDescription(finalOffer as any);
+      // 2) setLocalDescription -> TIMEOUT + FALLBACK
+      console.log('[startCall] setLocalDescription(munged offer) TRY');
+      const sldResult = await withTimeout(
+        s.pc.setLocalDescription(mungedInit as any),
+        3000,
+        'sLD(munged offer)',
+      );
 
-      console.log('[startCall] emit offer');
+      if (sldResult !== 'ok') {
+        console.log(
+          '[startCall] sLD(munged) FAIL/TIMEOUT -> retry with ORIGINAL offer. reason=',
+          sldResult,
+        );
+        try {
+          await s.pc.setLocalDescription(offer);
+          console.log('[startCall] setLocalDescription(original offer) OK');
+        } catch (e: any) {
+          console.error(
+            '[startCall] setLocalDescription(original) FAILED',
+            e?.message,
+          );
+          Alert.alert(
+            'Offer hatası',
+            'setLocalDescription başarısız: ' + (e?.message ?? String(e)),
+          );
+          return;
+        }
+      } else {
+        console.log('[startCall] setLocalDescription(munged) OK');
+      }
+
+      // Diagnostik
+      console.log(
+        '[startCall] signalingState=',
+        s.pc.signalingState,
+        ' iceGatheringState=',
+        s.pc.iceGatheringState,
+      );
+
+      // 3) Emisyon – mümkünse localDescription’dan al, yoksa munged’i yolla
+      const toSend = s.pc.localDescription?.sdp || munged || offer.sdp || '';
+      console.log('[startCall] emit offer (len=', toSend.length, ')');
       socket.emit('offer', {
         roomId: s.roomId,
-        sdp: finalOffer,
+        sdp: { type: 'offer', sdp: toSend },
       });
+
       setStatus('calling');
       console.log('[startCall] done');
     } catch (e: any) {
@@ -300,9 +340,29 @@ export default function CallDemo() {
     }
   }
 
+  // startCall() altına EKLE — küçük yardımcı
+  async function withTimeout<T>(
+    p: Promise<T>,
+    ms: number,
+    label: string,
+  ): Promise<'ok' | 'timeout' | 'reject'> {
+    let t: any;
+    try {
+      const r = await Promise.race([
+        p.then(() => 'ok' as const).catch(() => 'reject' as const),
+        new Promise<'timeout'>(res => {
+          t = setTimeout(() => res('timeout'), ms);
+        }),
+      ]);
+      return r;
+    } finally {
+      if (t) clearTimeout(t);
+    }
+  }
+
   function endCall() {
     console.log('[endCall]');
-    cleanup(stateRef.current);
+    cleanup(stateRef.current, 'manual-end');
     setStatus('idle');
     setPcReady(false);
     setLocalReady(false);
@@ -377,7 +437,7 @@ export default function CallDemo() {
 }
 
 const styles = StyleSheet.create({
-  scroll: { padding: 16, paddingBottom: 40 },
+  scroll: { padding: 16, paddingBottom: 40, marginTop: 30 },
   title: { fontSize: 22, fontWeight: '700', marginBottom: 8 },
   debug: { fontSize: 12, color: '#666', marginBottom: 8 },
   row: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },

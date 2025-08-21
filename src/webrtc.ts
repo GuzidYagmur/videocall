@@ -229,44 +229,35 @@ export async function handleRemoteIce(state: PeerState, candidate: any) {
   }
 }
 
-export function cleanup(state: PeerState) {
+export function cleanup(state: PeerState, why: string = 'unknown') {
   try {
-    state.pc?.close();
-  } catch {}
-  state.pc = null;
+    // zaten temiz mi?
+    const already =
+      !state.pc &&
+      (!state.localStream ||
+        state.localStream.getTracks().every(t => t.readyState === 'ended')) &&
+      !state.remoteStream;
 
-  try {
-    state.localStream?.getTracks().forEach(t => t.stop());
-  } catch {}
-  state.localStream = null;
-  state.remoteStream = null;
+    if (already) {
+      console.log('[cleanup] skipped (already clean). reason=', why);
+      return;
+    }
 
-  console.log('[cleanup] done');
+    try {
+      state.pc?.close();
+    } catch {}
+    state.pc = null;
+
+    try {
+      state.localStream?.getTracks().forEach(t => t.stop());
+    } catch {}
+    state.localStream = null;
+    state.remoteStream = null;
+
+    console.log('[cleanup] done. reason=', why);
+  } catch (e: any) {
+    console.warn('[cleanup] error', e?.message || e);
+  }
 }
 
 /** (İsteğe bağlı) Eski yardımcı – export ETMİYORUM ki çakışma olmasın. */
-export function preferVideoCodec(sdp: string, codec = 'VP8') {
-  const lines = sdp.split('\n');
-  const mIdx = lines.findIndex(l => l.startsWith('m=video'));
-  if (mIdx === -1) return sdp;
-
-  const rtpmap = /^a=rtpmap:(\d+)\s+([A-Za-z0-9_-]+)\/\d+/;
-  const payloadsForCodec: string[] = [];
-  for (const line of lines) {
-    const m = line.match(rtpmap);
-    if (m && m[2].toUpperCase().includes(codec.toUpperCase())) {
-      payloadsForCodec.push(m[1]);
-    }
-  }
-  if (!payloadsForCodec.length) return sdp;
-
-  const parts = lines[mIdx].trim().split(' ');
-  const header = parts.slice(0, 3); // m= video port proto
-  const payloads = parts.slice(3);
-  const newOrder = [
-    ...payloadsForCodec.filter(p => payloads.includes(p)),
-    ...payloads.filter(p => !payloadsForCodec.includes(p)),
-  ];
-  lines[mIdx] = [...header, ...newOrder].join(' ');
-  return lines.join('\n');
-}

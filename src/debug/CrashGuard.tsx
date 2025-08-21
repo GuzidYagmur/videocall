@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   DevSettings,
@@ -9,6 +8,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type LogItem = { ts: number; level: 'log' | 'warn' | 'error'; msg: string };
 const ring: LogItem[] = [];
@@ -31,7 +31,7 @@ export function CrashGuard({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const [, force] = useState(0);
   const timer = useRef<any>(null);
-
+  const insets = useSafeAreaInsets();
   useEffect(() => {
     // Console’ı zenginleştir
     const orig = { log: console.log, warn: console.warn, error: console.error };
@@ -92,12 +92,16 @@ export function CrashGuard({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <View style={{ flex: 1 }}>
+    <View style={{ flex: 1 }} pointerEvents="box-none">
       {children}
       {__DEV__ && (
         <>
           {/* Sağ üstte minik bir nokta: 3 kez hızlı dokun -> HUD aç/kapat */}
-          <Pressable onPress={() => setOpen(o => !o)} style={styles.fab} />
+          <Pressable
+            onPress={() => setOpen(o => !o)}
+            style={[styles.fab, { top: (insets.top || 0) + 12 }]}
+            hitSlop={{ top: 14, bottom: 14, left: 14, right: 14 }}
+          />
           <Modal
             visible={open}
             animationType="slide"
@@ -141,12 +145,14 @@ export function CrashGuard({ children }: { children: React.ReactNode }) {
 const styles = StyleSheet.create({
   fab: {
     position: 'absolute',
-    top: 8,
-    right: 8,
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: 'rgba(0,0,0,0.3)',
+    right: 12,
+    width: 2800,
+    height: 2800,
+
+    backgroundColor: 'rgba(35, 197, 86, 0.35)',
+    zIndex: 9999,
+    elevation: 50,
+    marginTop: 100,
   },
   modalWrap: {
     flex: 1,
