@@ -270,7 +270,6 @@ export default function CallDemo() {
         offerToReceiveVideo: true,
       } as any);
 
-      // 🔧 Emülatörlerde H264 crash’e yol açabiliyor → VP8’i üste al
       const munged = preferVideoCodec(offer.sdp || '', 'VP8');
       const finalOffer = { type: offer.type, sdp: munged } as const;
 

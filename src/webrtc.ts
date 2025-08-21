@@ -43,6 +43,111 @@ export async function createLocalStream(): Promise<MediaStream> {
   return stream;
 }
 
+/** WebRTC olaylarını görünür kıl (HUD’da/logcat’te rahat takip) */
+export function installPcInstrumentation(pc: RTCPeerConnection, name = 'pc') {
+  if (!pc) return;
+  const pca = pc as any;
+  const L = (...a: any[]) => console.log(`[${name}]`, ...a);
+
+  L('instrumentation: install');
+  pca.addEventListener?.('negotiationneeded', () =>
+    L('event: negotiationneeded'),
+  );
+  pca.addEventListener?.('icegatheringstatechange', () =>
+    L('iceGatheringState =', pca.iceGatheringState),
+  );
+  pca.addEventListener?.('iceconnectionstatechange', () =>
+    L('iceConnectionState =', pca.iceConnectionState),
+  );
+  pca.addEventListener?.('connectionstatechange', () =>
+    L('connectionState =', pca.connectionState),
+  );
+  pca.addEventListener?.('signalingstatechange', () =>
+    L('signalingState =', pca.signalingState),
+  );
+  pca.addEventListener?.('track', (ev: any) =>
+    L('event: track', ev?.track?.kind, !!ev?.streams?.[0]),
+  );
+
+  // Başlangıç snapshot
+  try {
+    const send = pc
+      .getSenders()
+      .map(s => s.track?.kind + ':' + (s.track?.readyState || 'n/a'));
+    const recv = pc
+      .getReceivers()
+      .map(r => r.track?.kind + ':' + (r.track?.readyState || 'n/a'));
+    L('snapshot', { send, recv });
+  } catch (e: any) {
+    L('snapshot error', e?.message);
+  }
+}
+
+/**
+ * SDP’yi sadece VP8 (video) ve OPUS (audio) kalacak şekilde filtreler.
+ * H264/HEVC/AV1 ve ilgili fmtp/rtcp-fb satırlarını temizler.
+ */
+export function forceVp8AndOpus(original: string): string {
+  if (!original) return original;
+  const sdp = original.split(/\r?\n/);
+
+  const pts: Record<'audio' | 'video', Set<string>> = {
+    audio: new Set(),
+    video: new Set(),
+  };
+  const keepVideo = new Set<string>();
+  const keepAudio = new Set<string>();
+
+  // rtpmap’leri tara, hangi m= bloğunda olduklarını bul
+  for (let i = 0; i < sdp.length; i++) {
+    const m = sdp[i].match(/^a=rtpmap:(\d+)\s+([A-Za-z0-9_-]+)\/(\d+)/);
+    if (!m) continue;
+    const pt = m[1],
+      codec = m[2].toUpperCase();
+
+    let kind: 'audio' | 'video' | undefined;
+    for (let j = i; j >= 0; j--) {
+      if (sdp[j].startsWith('m=audio')) {
+        kind = 'audio';
+        break;
+      }
+      if (sdp[j].startsWith('m=video')) {
+        kind = 'video';
+        break;
+      }
+    }
+    if (!kind) continue;
+    pts[kind].add(pt);
+
+    if (kind === 'video' && codec === 'VP8') keepVideo.add(pt);
+    if (kind === 'audio' && codec === 'OPUS') keepAudio.add(pt);
+  }
+
+  const filterMLine = (kind: 'audio' | 'video', keep: Set<string>) => {
+    const idx = sdp.findIndex(l => l.startsWith(`m=${kind}`));
+    if (idx === -1) return;
+    const parts = sdp[idx].trim().split(' ');
+    const header = parts.slice(0, 3); // m=<kind> <port> <proto>
+    const payloads = parts.slice(3).filter(pt => keep.has(pt));
+    sdp[idx] = [...header, ...payloads].join(' ');
+  };
+
+  filterMLine('video', keepVideo);
+  filterMLine('audio', keepAudio);
+
+  const keepAll = new Set<string>([...keepVideo, ...keepAudio]);
+  const out: string[] = [];
+  for (const line of sdp) {
+    const rtp = line.match(/^a=rtpmap:(\d+)\s/);
+    const fmtp = line.match(/^a=fmtp:(\d+)\s/);
+    const fb = line.match(/^a=rtcp-fb:(\d+)\s/);
+    const pt = (rtp || fmtp || fb)?.[1];
+    if (pt && !keepAll.has(pt)) continue; // istenmeyen PT satırlarını at
+    out.push(line);
+  }
+  return out.join('\r\n');
+}
+
 export function createPeer(
   state: PeerState,
   onRemote: (ms: MediaStream) => void,
@@ -51,7 +156,6 @@ export function createPeer(
   console.log('[pc] creating RTCPeerConnection');
   const pc = new RTCPeerConnection({
     iceServers,
-
     sdpSemantics: 'unified-plan' as any,
     bundlePolicy: 'max-bundle',
     iceCandidatePoolSize: 0,
@@ -59,6 +163,9 @@ export function createPeer(
 
   state.pc = pc;
   const pca = pc as any;
+
+  // Enstrümantasyon
+  installPcInstrumentation(pc, 'pc-local');
 
   pca.addEventListener('icecandidate', (e: any) => {
     if (e?.candidate) {
@@ -99,18 +206,6 @@ export function createPeer(
     console.warn('[pc] createPeer called without localStream');
   }
 
-  pca.addEventListener('connectionstatechange', () =>
-    console.log('[pc] connectionState =', pca.connectionState),
-  );
-  pca.addEventListener('iceconnectionstatechange', () =>
-    console.log('[pc] iceConnectionState =', pca.iceConnectionState),
-  );
-  pca.addEventListener('signalingstatechange', () =>
-    console.log('[pc] signalingState =', pca.signalingState),
-  );
-  pca.addEventListener('icegatheringstatechange', () =>
-    console.log('[pc] iceGatheringState =', pca.iceGatheringState),
-  );
   pca.onnegotiationneeded = () => console.log('[pc] onnegotiationneeded');
 
   return pc;
@@ -149,6 +244,7 @@ export function cleanup(state: PeerState) {
   console.log('[cleanup] done');
 }
 
+/** (İsteğe bağlı) Eski yardımcı – export ETMİYORUM ki çakışma olmasın. */
 export function preferVideoCodec(sdp: string, codec = 'VP8') {
   const lines = sdp.split('\n');
   const mIdx = lines.findIndex(l => l.startsWith('m=video'));
