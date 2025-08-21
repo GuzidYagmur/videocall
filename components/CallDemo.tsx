@@ -18,7 +18,8 @@ import {
   createPeer,
   handleRemoteIce,
   cleanup,
-  preferVideoCodec,
+  // preferVideoCodec, // ❌ kaldırıldı
+  forceVp8AndOpus, // ✅ eklendi
 } from '../src/webrtc';
 import { socket } from '../src/signaling';
 
@@ -147,12 +148,15 @@ export default function CallDemo() {
         if (sdp?.type === 'offer') {
           console.log('[SDP] createAnswer()');
           const answer = await pc.createAnswer();
-          // (İstenirse burada da VP8 tercih edilebilir)
-          console.log('[SDP] setLocalDescription(answer)');
-          await pc.setLocalDescription(answer);
+
+          // ✅ SDP’yi VP8/Opus’a zorla (callee tarafı)
+          const munged = forceVp8AndOpus(answer.sdp || '');
+          console.log('[SDP] setLocalDescription(munged answer)');
+          await pc.setLocalDescription({ type: 'answer', sdp: munged });
+
           socket.emit('answer', {
             roomId: stateRef.current.roomId,
-            sdp: { type: answer.type, sdp: answer.sdp },
+            sdp: { type: 'answer', sdp: munged },
           });
           setStatus('calling');
         } else {
@@ -252,28 +256,33 @@ export default function CallDemo() {
 
   async function startCall() {
     try {
-      if (!canStart) return;
+      if (!canStart) {
+        Alert.alert('Uyarı', 'Önce odaya katıl ve kamerayı aç.');
+        return;
+      }
       await waitForSocketConnected();
 
       const s = stateRef.current;
-      if (!s.pc || !s.localStream)
-        throw new Error('Önce “Kamerayı Aç & Odaya Katıl”.');
+      if (!s.pc || !s.localStream) {
+        Alert.alert('Uyarı', 'Önce “Kamerayı Aç & Odaya Katıl”.');
+        return;
+      }
       if (flags.current.makingOffer) return;
-      if (s.pc.signalingState !== 'stable')
-        throw new Error(`Uygunsuz durum: ${s.pc.signalingState}`);
+      if (s.pc.signalingState !== 'stable') {
+        console.log('[startCall] not stable:', s.pc.signalingState);
+        return;
+      }
 
       flags.current.makingOffer = true;
 
       console.log('[startCall] createOffer() begin');
-      const offer = await s.pc.createOffer({
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: true,
-      } as any);
+      const offer = await s.pc.createOffer({} as any);
 
-      const munged = preferVideoCodec(offer.sdp || '', 'VP8');
-      const finalOffer = { type: offer.type, sdp: munged } as const;
+      // ✅ SDP’yi VP8/Opus’a zorla (caller tarafı)
+      const munged = forceVp8AndOpus(offer.sdp || '');
+      const finalOffer = { type: 'offer' as const, sdp: munged };
 
-      console.log('[startCall] setLocalDescription(offer, VP8-first)');
+      console.log('[startCall] setLocalDescription(munged offer)');
       await s.pc.setLocalDescription(finalOffer as any);
 
       console.log('[startCall] emit offer');
