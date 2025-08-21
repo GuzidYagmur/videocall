@@ -49,13 +49,11 @@ export function createPeer(
   onIce?: (c: any) => void,
 ) {
   console.log('[pc] creating RTCPeerConnection');
+
+  // Use minimal configuration first
   const pc = new RTCPeerConnection({
     iceServers,
-
-    sdpSemantics: 'unified-plan' as any,
-    bundlePolicy: 'max-bundle',
-    iceCandidatePoolSize: 0,
-  } as any);
+  });
 
   state.pc = pc;
   const pca = pc as any;
@@ -86,15 +84,23 @@ export function createPeer(
     if (stream) onRemote(stream);
   });
 
-  pca.addEventListener?.('addstream', (e: any) => {
-    console.log('[addstream] fired');
-    if (e?.stream) onRemote(e.stream);
-  });
-
+  // Add tracks one by one with error handling
   if (state.localStream) {
     const tracks = state.localStream.getTracks();
-    console.log('[pc] addTrack count=', tracks.length);
-    for (const t of tracks) pc.addTrack(t, state.localStream);
+    console.log('[pc] Adding tracks, count:', tracks.length);
+
+    for (let i = 0; i < tracks.length; i++) {
+      const track = tracks[i];
+      try {
+        console.log(
+          `[pc] Adding track ${i + 1}/${tracks.length}: ${track.kind}`,
+        );
+        pc.addTrack(track, state.localStream);
+        console.log(`[pc] Track ${i + 1} added successfully`);
+      } catch (err) {
+        console.error(`[pc] Failed to add track ${i + 1}:`, err);
+      }
+    }
   } else {
     console.warn('[pc] createPeer called without localStream');
   }
@@ -141,7 +147,13 @@ export function cleanup(state: PeerState) {
   state.pc = null;
 
   try {
-    state.localStream?.getTracks().forEach(t => t.stop());
+    state.localStream?.getTracks().forEach(t => {
+      try {
+        t.stop();
+      } catch (err) {
+        console.warn('[cleanup] Error stopping track:', err);
+      }
+    });
   } catch {}
   state.localStream = null;
   state.remoteStream = null;
@@ -150,27 +162,107 @@ export function cleanup(state: PeerState) {
 }
 
 export function preferVideoCodec(sdp: string, codec = 'VP8') {
-  const lines = sdp.split('\n');
-  const mIdx = lines.findIndex(l => l.startsWith('m=video'));
-  if (mIdx === -1) return sdp;
-
-  const rtpmap = /^a=rtpmap:(\d+)\s+([A-Za-z0-9_-]+)\/\d+/;
-  const payloadsForCodec: string[] = [];
-  for (const line of lines) {
-    const m = line.match(rtpmap);
-    if (m && m[2].toUpperCase().includes(codec.toUpperCase())) {
-      payloadsForCodec.push(m[1]);
+  try {
+    // Safety check for invalid SDP
+    if (!sdp || typeof sdp !== 'string') {
+      console.warn(
+        '[preferVideoCodec] Invalid SDP provided, returning original',
+      );
+      return sdp || '';
     }
-  }
-  if (!payloadsForCodec.length) return sdp;
 
-  const parts = lines[mIdx].trim().split(' ');
-  const header = parts.slice(0, 3); // m= video port proto
-  const payloads = parts.slice(3);
-  const newOrder = [
-    ...payloadsForCodec.filter(p => payloads.includes(p)),
-    ...payloads.filter(p => !payloadsForCodec.includes(p)),
-  ];
-  lines[mIdx] = [...header, ...newOrder].join(' ');
-  return lines.join('\n');
+    const lines = sdp.split('\n');
+
+    // Find the m=video line
+    const mIdx = lines.findIndex(l => l && l.startsWith('m=video'));
+
+    if (mIdx === -1) {
+      console.log(
+        '[preferVideoCodec] No video line found in SDP, returning original',
+      );
+      return sdp;
+    }
+
+    // Find codec payloads
+    const rtpmap = /^a=rtpmap:(\d+)\s+([A-Za-z0-9_-]+)\/\d+/;
+    const payloadsForCodec: string[] = [];
+
+    for (const line of lines) {
+      if (!line) continue;
+
+      try {
+        const m = line.match(rtpmap);
+        if (
+          m &&
+          m[1] &&
+          m[2] &&
+          m[2].toUpperCase().includes(codec.toUpperCase())
+        ) {
+          payloadsForCodec.push(m[1]);
+          console.log(`[preferVideoCodec] Found ${codec} payload: ${m[1]}`);
+        }
+      } catch (err) {
+        console.warn('[preferVideoCodec] Error processing line:', line, err);
+      }
+    }
+
+    if (!payloadsForCodec.length) {
+      console.log(
+        `[preferVideoCodec] Codec ${codec} not found in SDP, returning original`,
+      );
+      return sdp;
+    }
+
+    // Parse the m=video line safely
+    const videoLine = lines[mIdx];
+    if (!videoLine) {
+      console.warn(
+        '[preferVideoCodec] Video line is empty, returning original',
+      );
+      return sdp;
+    }
+
+    const parts = videoLine.trim().split(' ');
+
+    // Ensure we have at least the minimum parts (m=video port proto)
+    if (parts.length < 3) {
+      console.warn(
+        '[preferVideoCodec] Invalid video line format, parts:',
+        parts,
+      );
+      return sdp;
+    }
+
+    // m=video 9 UDP/TLS/RTP/SAVPF [payload types...]
+    const header = parts.slice(0, 3);
+    const payloads = parts.slice(3);
+
+    if (payloads.length === 0) {
+      console.warn('[preferVideoCodec] No payloads found in video line');
+      return sdp;
+    }
+
+    console.log('[preferVideoCodec] Original payloads:', payloads);
+
+    // Reorder payloads to prefer the specified codec
+    const preferredPayloads = payloadsForCodec.filter(p =>
+      payloads.includes(p),
+    );
+    const otherPayloads = payloads.filter(p => !payloadsForCodec.includes(p));
+    const newOrder = [...preferredPayloads, ...otherPayloads];
+
+    console.log('[preferVideoCodec] Reordered payloads:', newOrder);
+
+    // Only update if we have payloads
+    if (newOrder.length > 0) {
+      lines[mIdx] = [...header, ...newOrder].join(' ');
+      console.log('[preferVideoCodec] Updated video line:', lines[mIdx]);
+    }
+
+    return lines.join('\n');
+  } catch (error) {
+    console.error('[preferVideoCodec] Unexpected error processing SDP:', error);
+    // Return original SDP on any error to prevent crash
+    return sdp || '';
+  }
 }

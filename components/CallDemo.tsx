@@ -90,6 +90,8 @@ export default function CallDemo() {
   const canStart = pcReady && localReady && status === 'joined';
 
   function waitForSocketConnected(timeout = 4000) {
+    console.log('Socket başlatılıyor');
+
     return new Promise<void>((resolve, reject) => {
       if (socket.connected) return resolve();
       const timer = setTimeout(
@@ -147,8 +149,8 @@ export default function CallDemo() {
         if (sdp?.type === 'offer') {
           console.log('[SDP] createAnswer()');
           const answer = await pc.createAnswer();
-          // (İstenirse burada da VP8 tercih edilebilir)
-          console.log('[SDP] setLocalDescription(answer)');
+
+          console.log('[SDP] setLocalDescription(answer)', answer);
           await pc.setLocalDescription(answer);
           socket.emit('answer', {
             roomId: stateRef.current.roomId,
@@ -252,41 +254,85 @@ export default function CallDemo() {
 
   async function startCall() {
     try {
-      if (!canStart) return;
-      await waitForSocketConnected();
+      console.log('[startCall] Starting...');
+
+      // Detaylı validation
+      if (!pcReady || !localReady || status !== 'joined') {
+        console.warn('[startCall] Conditions not met:', {
+          pcReady,
+          localReady,
+          status,
+        });
+        return;
+      }
+
+      if (!socket.connected) {
+        console.warn('[startCall] Socket not connected');
+        await waitForSocketConnected();
+      }
 
       const s = stateRef.current;
-      if (!s.pc || !s.localStream)
-        throw new Error('Önce “Kamerayı Aç & Odaya Katıl”.');
-      if (flags.current.makingOffer) return;
-      if (s.pc.signalingState !== 'stable')
-        throw new Error(`Uygunsuz durum: ${s.pc.signalingState}`);
+
+      if (!s.pc) {
+        throw new Error('Peer connection is null');
+      }
+
+      if (s.pc.signalingState !== 'stable') {
+        console.warn(
+          `[startCall] Invalid signaling state: ${s.pc.signalingState}`,
+        );
+        return;
+      }
+
+      if (flags.current.makingOffer) {
+        console.log('[startCall] Already making offer');
+        return;
+      }
 
       flags.current.makingOffer = true;
 
-      console.log('[startCall] createOffer() begin');
+      // Offer oluştur
       const offer = await s.pc.createOffer({
         offerToReceiveAudio: true,
         offerToReceiveVideo: true,
-      } as any);
+      });
 
-      // 🔧 Emülatörlerde H264 crash’e yol açabiliyor → VP8’i üste al
-      const munged = preferVideoCodec(offer.sdp || '', 'VP8');
-      const finalOffer = { type: offer.type, sdp: munged } as const;
+      if (!offer || !offer.sdp) {
+        throw new Error('Invalid offer created');
+      }
 
-      console.log('[startCall] setLocalDescription(offer, VP8-first)');
-      await s.pc.setLocalDescription(finalOffer as any);
+      console.log('[startCall] Setting local description...');
+      await s.pc.setLocalDescription(offer);
 
-      console.log('[startCall] emit offer');
+      console.log('[startCall] Sending offer...');
       socket.emit('offer', {
         roomId: s.roomId,
-        sdp: finalOffer,
+        sdp: {
+          type: offer.type,
+          sdp: offer.sdp,
+        },
       });
+
       setStatus('calling');
-      console.log('[startCall] done');
-    } catch (e: any) {
-      console.error('[startCall] error', e);
-      Alert.alert('Offer hatası', e?.message ?? String(e));
+      console.log('[startCall] Offer sent successfully');
+    } catch (error) {
+      console.error('[startCall] Error:', error);
+      Alert.alert(
+        'Arama Hatası',
+        `Arama başlatılamadı: ${(error as Error).message}`,
+      );
+
+      // Hata durumunda state'i temizle
+      flags.current.makingOffer = false;
+
+      // Peer connection'ı yeniden başlat
+      if (stateRef.current.pc) {
+        try {
+          await initAndJoin();
+        } catch (reinitError) {
+          console.error('[startCall] Reinit failed:', reinitError);
+        }
+      }
     } finally {
       flags.current.makingOffer = false;
     }
@@ -369,46 +415,86 @@ export default function CallDemo() {
 }
 
 const styles = StyleSheet.create({
-  scroll: { padding: 16, paddingBottom: 40 },
-  title: { fontSize: 22, fontWeight: '700', marginBottom: 8 },
-  debug: { fontSize: 12, color: '#666', marginBottom: 8 },
-  row: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
-  label: { width: 80 },
+  scroll: {
+    flexGrow: 1,
+    padding: 16,
+    backgroundColor: '#f5f5f5',
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  debug: {
+    fontSize: 11,
+    color: '#666',
+    marginBottom: 16,
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  label: {
+    fontSize: 16,
+    marginRight: 8,
+  },
   input: {
     flex: 1,
     borderWidth: 1,
-    borderColor: '#ccc',
+    borderColor: '#ddd',
     borderRadius: 8,
-    paddingHorizontal: 10,
-    height: 40,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 16,
+    backgroundColor: 'white',
   },
-  btns: { gap: 8, marginVertical: 12 },
-  sub: { fontSize: 16, fontWeight: '600', marginVertical: 8 },
+  btns: {
+    gap: 8,
+    marginBottom: 24,
+  },
+  btnBase: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  btnPrimary: {
+    backgroundColor: '#007AFF',
+  },
+  btnDanger: {
+    backgroundColor: '#FF3B30',
+  },
+  btnDisabled: {
+    backgroundColor: '#C7C7CC',
+  },
+  btnPressed: {
+    opacity: 0.8,
+  },
+  btnText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  sub: {
+    fontSize: 18,
+    fontWeight: '600',
+    marginTop: 16,
+    marginBottom: 8,
+  },
   video: {
     width: '100%',
-    height: 220,
-    backgroundColor: '#000',
+    height: 200,
+    backgroundColor: 'black',
     borderRadius: 8,
   },
   placeholder: {
-    height: 220,
+    width: '100%',
+    height: 200,
+    backgroundColor: '#E5E5EA',
     borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    alignItems: 'center',
     justifyContent: 'center',
-  },
-
-  // Buton stilleri
-  btnBase: {
-    height: 44,
-    borderRadius: 10,
     alignItems: 'center',
-    justifyContent: 'center',
   },
-  btnPrimary: { backgroundColor: '#0A84FF' },
-  btnDisabled: { backgroundColor: '#C7C7CC' },
-  btnDanger: { backgroundColor: '#FF3B30' },
-  btnPressed: { opacity: 0.85 },
-  btnText: { color: '#fff', fontWeight: '600' },
 });
