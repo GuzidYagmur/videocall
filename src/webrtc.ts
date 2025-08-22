@@ -50,7 +50,6 @@ export function createPeer(
 ) {
   console.log('[pc] creating RTCPeerConnection');
 
-  // Use minimal configuration first
   const pc = new RTCPeerConnection({
     iceServers,
   });
@@ -84,7 +83,6 @@ export function createPeer(
     if (stream) onRemote(stream);
   });
 
-  // Add tracks one by one with error handling
   if (state.localStream) {
     const tracks = state.localStream.getTracks();
     console.log('[pc] Adding tracks, count:', tracks.length);
@@ -163,7 +161,6 @@ export function cleanup(state: PeerState) {
 
 export function preferVideoCodec(sdp: string, codec = 'VP8') {
   try {
-    // Safety check for invalid SDP
     if (!sdp || typeof sdp !== 'string') {
       console.warn(
         '[preferVideoCodec] Invalid SDP provided, returning original',
@@ -173,7 +170,6 @@ export function preferVideoCodec(sdp: string, codec = 'VP8') {
 
     const lines = sdp.split('\n');
 
-    // Find the m=video line
     const mIdx = lines.findIndex(l => l && l.startsWith('m=video'));
 
     if (mIdx === -1) {
@@ -183,7 +179,6 @@ export function preferVideoCodec(sdp: string, codec = 'VP8') {
       return sdp;
     }
 
-    // Find codec payloads
     const rtpmap = /^a=rtpmap:(\d+)\s+([A-Za-z0-9_-]+)\/\d+/;
     const payloadsForCodec: string[] = [];
 
@@ -213,7 +208,6 @@ export function preferVideoCodec(sdp: string, codec = 'VP8') {
       return sdp;
     }
 
-    // Parse the m=video line safely
     const videoLine = lines[mIdx];
     if (!videoLine) {
       console.warn(
@@ -224,7 +218,6 @@ export function preferVideoCodec(sdp: string, codec = 'VP8') {
 
     const parts = videoLine.trim().split(' ');
 
-    // Ensure we have at least the minimum parts (m=video port proto)
     if (parts.length < 3) {
       console.warn(
         '[preferVideoCodec] Invalid video line format, parts:',
@@ -233,7 +226,6 @@ export function preferVideoCodec(sdp: string, codec = 'VP8') {
       return sdp;
     }
 
-    // m=video 9 UDP/TLS/RTP/SAVPF [payload types...]
     const header = parts.slice(0, 3);
     const payloads = parts.slice(3);
 
@@ -244,7 +236,6 @@ export function preferVideoCodec(sdp: string, codec = 'VP8') {
 
     console.log('[preferVideoCodec] Original payloads:', payloads);
 
-    // Reorder payloads to prefer the specified codec
     const preferredPayloads = payloadsForCodec.filter(p =>
       payloads.includes(p),
     );
@@ -253,7 +244,6 @@ export function preferVideoCodec(sdp: string, codec = 'VP8') {
 
     console.log('[preferVideoCodec] Reordered payloads:', newOrder);
 
-    // Only update if we have payloads
     if (newOrder.length > 0) {
       lines[mIdx] = [...header, ...newOrder].join(' ');
       console.log('[preferVideoCodec] Updated video line:', lines[mIdx]);
@@ -262,7 +252,7 @@ export function preferVideoCodec(sdp: string, codec = 'VP8') {
     return lines.join('\n');
   } catch (error) {
     console.error('[preferVideoCodec] Unexpected error processing SDP:', error);
-    // Return original SDP on any error to prevent crash
+
     return sdp || '';
   }
 }
